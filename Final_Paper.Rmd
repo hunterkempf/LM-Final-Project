@@ -1,0 +1,646 @@
+---
+title: "Linear Models Final Project"
+author: "Hunter Kempf - East Section"
+date: "5/8/2019"
+output: 
+  pdf_document:
+    toc: true
+    df_print: kable
+urlcolor: blue
+---
+
+```{r setup, include=FALSE}
+rm(list=ls())
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(fig.width=12, fig.height=7,fig.align = "center") 
+```
+
+
+```{r include=FALSE}
+# read in libraries 
+library(tidyverse) # general dataframe manipulation
+library(MASS) # statistical package
+library(rms) # regression modeling package
+```
+
+```{r include=FALSE}
+#set working directory
+setwd("~/Developer/Linear Models/Final Project/Combined Final Project")
+
+# read in data file and column names file 
+crime<- read_csv("crime.txt",col_names=F)
+colsnames <- read_csv("colnames.csv")
+colnames(crime)<-colnames(colsnames)
+```
+
+# Introduction
+
+This report will take you through the data science process of fitting a linear regression model from Exploratory Data Analysis to Predicting results for new data. 
+
+The dataset being used is the Communities and Crime Data Set from UCI. The data combines socio-economic data from the 1990 US Census, law enforcement data from the 1990 US LEMAS survey, and crime data from the 1995 FBI UCR. More information about it can be found [here](https://archive.ics.uci.edu/ml/datasets/Communities+and+Crime)
+
+Using this data a linear model will be fit to best predict Violent Crimes per 100k people using all other useful columns and two variable selection methods. Some other investigations will be made to see possible transformations that will improve model performance or unusual points that should be removed to improve the model performance. This analysis only focuses on linear models and does not use any other more advanced modeling techniques such as Decision trees, Random Forrests or Neural Nets some or all of which may prove better at prediction than a linear model for this data. 
+
+# Step 1: Exploratory Data Analysis
+
+The first step in the data science process is to understand the data set you are working with. This section will include some plots and other information about the dataset to give a broad overview about the dataset and reasons for any restrictions to the dataset
+
+```{r echo=FALSE}
+# get basic view of raw dataset
+glimpse(crime)
+```
+
+Since many columns have missing values denoted as "?" we need to remove those and replace them with NA's that R can handle better. Also we will remove columns with a majority of values that are NA's or character columns that dont work well with linear models. A list of these removed columns, the number, percentage of NA values in them and their type is displayed below.
+
+```{r echo=FALSE}
+# function to clean up columns that had ? in them 
+convert_types <- function(x) {
+    stopifnot(is.list(x))
+    x[] <- rapply(x, utils::type.convert, classes = "character",
+                  how = "replace", as.is = TRUE)
+    return(x)
+}
+
+# replace question marks with NAs and convert all columns back to what they should be
+crime[crime=="?"] <- NA
+crime <- convert_types(crime)
+
+# analyze the removed columns 
+crime.removed <- crime %>% dplyr::select(county,community,communityname,c(LemasSwornFT:PolicAveOTWorked),c(PolicCars:LemasGangUnitDeploy),PolicBudgPerPop) 
+
+# make table describing the columns removed from analysis
+colSums(is.na(crime.removed))%>% data.frame()%>% rename("Count of NAs" = ".") %>% rownames_to_column("Removed Variables")%>% mutate(`Percent NAs` = `Count of NAs`/dim(crime.removed)[1],`Column Type` = sapply(crime.removed,class))
+
+```
+
+Also any rows with NAs will be omitted from the analysis. In our case this is only one row caused by the single NA value in the OtherPerCap variable.
+
+```{r include=FALSE}
+# remove columns with too many NA values
+crime <- crime %>% dplyr::select(-county,-community,-communityname,-c(LemasSwornFT:PolicAveOTWorked),-c(PolicCars:LemasGangUnitDeploy),-PolicBudgPerPop)
+# remove rows with NA values
+crime <- crime %>% na.omit()
+```
+
+
+## In Depth Single Variable Exploration
+
+This section is a more in depth of an exploration of a few variables that I assume are related to the target variable our model will try to predict ViolentCrimesPerPop
+
+
+```{r echo=FALSE}
+ggplot(
+  data = crime,
+  aes(y = PctEmploy,x = ViolentCrimesPerPop)
+) + geom_point() + ggtitle("The percentage of people employed vs crimes shows lower employment trends with more crimes")
+```
+
+
+
+```{r echo=FALSE}
+ggplot(
+  data = crime,
+  aes(y = perCapInc,x = ViolentCrimesPerPop)
+) + geom_point() + ggtitle("Per capita income vs crimes shows lower income trends with more crimes")
+```
+
+
+
+```{r echo=FALSE}
+ggplot(
+  data = crime,
+  aes(y = RentMedian,x = ViolentCrimesPerPop)
+) + geom_point() + ggtitle("Lower Median Rent vs crime shows lower rent trends with more crimes")
+```
+
+
+
+```{r echo=FALSE}
+ggplot(
+  data = crime,
+  aes(y = PctHousOwnOcc,x = ViolentCrimesPerPop)
+) + geom_point() + ggtitle("Percentage of houses owned by the occupants shows lower homeownership trends with more crime")
+```
+
+# Step 2: Fit a linear Model
+
+```{r echo=FALSE}
+# make lm with 4 predictors chosen in EDA
+simple_4var_lm <- lm(ViolentCrimesPerPop ~ PctEmploy + perCapInc + RentMedian + PctHousOwnOcc,data = crime)
+summary(simple_4var_lm)
+```
+
+As you can see all of my variables are statistically significant from the p-values in the model summary. The R-squared and Adjusted R-squared are quite low though and point to the fact that the features chosen only explain around .28 of the variance in the ViolentCrimesPerPop variable. 
+
+The parameter estimates were similar to my intuition based on the EDA graphs for 3 of 4 variables. PctEmploy has a negative slope meaning as employment decreases violent crimes increase. perCapInc has a negative slope meaning as income decreases violent crimes increase. RentMedian has a positive slope meaning as median rent increases violent crimes increase this is not what I expected based on the EDA graph.PctHousOwnOcc has a negative slope meaning as house owners as a percentage of the population decreases violent crimes increase.
+
+# Step 3: Perform model selection
+
+Model selection will be done with both the fastbw and stepAIC algorithms
+
+```{r include=FALSE}
+# fit ols model with every variable
+mod.ols <- ols( ViolentCrimesPerPop ~ ., data=crime)
+# run fastbw variable selection
+fastbw.parameters <- fastbw(mod.ols, rule="p", sls=0.05)
+# print out variables saved
+fastbw.parameters$coefficients
+```
+
+
+```{r include=FALSE}
+mod <- lm(ViolentCrimesPerPop ~ ., data=crime)
+summary(mod)
+mod.aic <- stepAIC(mod)
+```
+
+## Final stepAIC() model
+The stepAIC model used PctEmploy,PctHousOwnOcc that I used in my model but didnt use RentMedian (used RentLowQ and MedRent instead) also didnt use perCapInc (but used medIncome, pctWWage,medFamInc which all deal with income). This model makes sense to me and roughly matched my intuition for a 4 variable model. The variables I threw out on my own were the variables that were sparse (had mostly NA values) and to get the selection algorithms to work I had to also remove these variables. Since there were over 50 variables deleted I cant cover all of them. Most were deleted from multicoliniarity.
+
+```{r echo=FALSE}
+summary(mod.aic)
+```
+## Final fastbw() model
+
+The fastbw model selected PctEmploy and PctHousOwnOcc which I included in my model but did not include perCapInc (used pctWWage which deals with income also) and RentMedian (used RentLowQ + MedRent). Honestly the model from fastbw matched my intuition. I picked variables that are associated with income and housing and this model chose the variables I did or very similar ones. It also added in variables related to Immigrants and Divorce. Most of these variables seem plausable to include in a violent crime model.Since there were over 50 variables deleted I cant cover all of them. Most were deleted from multicoliniarity.
+
+```{r echo=FALSE}
+mod.fastbw <- lm(ViolentCrimesPerPop ~ state+racepctblack+agePct12t29+pctUrban +            
+pctWWage+pctWFarmSelf+pctWInvInc+OtherPerCap +          
+PctEmploy+MalePctDivorce+MalePctNevMarr+TotalPctDiv+
+PctKids2Par+PctWorkMom+PctIlleg+NumImmig+       
+PctNotSpeakEnglWell+PersPerOccupHous+PersPerRentOccHous+PctPersOwnOccup+    
+PctPersDenseHous+HousVacant+PctHousOccup+PctHousOwnOcc+       
+OwnOccLowQuart+RentLowQ+MedRent+MedOwnCostPctIncNoMtg+
+NumStreet+PctForeignBorn , data=crime)
+summary(mod.fastbw)
+```
+
+
+## Final model choice 
+
+I would chose the model produced by stepAIC becuase it has a better adjusted R-squared (0.6857  vs. 0.678) although it does use 21 more predictor variables. Adjusted R-squared does penalize using more predictors so this is the most standardized way to compare the two models that use different numbers of predictors.
+
+# Step 4: Apply diagnostics to the model
+
+## Fitted values vs residuals plot
+
+There seems to be mostly random scattering of residuals but there seems to be a trendline from top left to bottom right this assumption of randomness in residuals vs fitted vals doesnt seem upheld
+
+```{r echo=FALSE}
+plot(mod.aic$fitted.values, mod.aic$residuals)
+```
+
+## Q-Q plot
+
+The line is mostly straight but has a pretty big bend up that shows the assumption of randomness does not seem to be upheld
+
+```{r echo=FALSE}
+qqnorm(mod.aic$residuals)
+```
+
+## Lagged residual plot
+
+This shows a roughly random plot so the assumptions are held up and the lagged residuals are randomly distributed
+
+```{r echo=FALSE}
+n <- length(residuals(mod.aic))
+plot(tail(residuals(mod.aic),n-1)~head(residuals(mod.aic),n-1),
+     xlab = expression(hat(epsilon)), ylab=expression(hat(epsilon)[i+1]))
+abline(h=0,v=0,col=grey(.75))
+```
+
+# Step 5: Investigate fit for individual observations
+
+```{r echo=FALSE}
+X <- model.matrix(mod.aic)
+n <- dim(X)[1]
+p <- dim(X)[2]
+
+hatv <- hatvalues(mod.aic)
+
+# Leverage investigation
+
+high.leverage <- hatv[hatv>2*p/n]
+print(paste("Number of high leverage points:",length(high.leverage)))
+
+# Outlier investigation
+
+rstd <- rstandard(mod.aic)
+outlier <- rstd[abs(rstd)>3]
+
+print(paste("Number of outlier points:",length(outlier)))
+
+
+rstd.hand <- mod.aic$residuals/(sqrt(1- hatv)*
+                                  sqrt(sum(mod.aic$residuals^2)/mod.aic$df.residual))
+
+# Problematic investigation
+
+problematic <- which(hatv>2*p/n&abs(rstd)>3)
+print(paste("Number of problematic points:",length(problematic)))
+
+# Cooks distance influence investigation
+
+cook <- cooks.distance(mod.aic)
+
+print(paste("Largest cook's distance:",max(cook)))
+
+
+num.df <- p
+den.df <- n-p
+F.thresh <- qf(0.5,num.df,den.df)
+
+print(paste("F statistic threshold:",F.thresh))
+
+influential <- which(hatv>2*p/n&abs(rstd)>3&cook>F.thresh)
+print(paste("Number of influential points:",length(influential)))
+```
+
+## Discussion of results
+
+While there are 35 outlier points, none of those points are considered influential. We only have one point that we would consider to be problematic (the cross section of the high leverage and outlier points). None of the points are even remotely close to being influential because the threshold is ~.99 and the largest cook value is .035. Basically this means that even though we have outlier points we can leave them in since they arent influential enough to affect our model materially
+
+# Step 6: Apply transformations to model as needed
+
+A BoxCox transformation is needed. With the lambda value of -2 as shown by the peak in the chart 
+
+```{r echo=FALSE}
+# make Violent Crimes Per Pop always positive for boxcox
+crime.pos <- crime
+crime.pos$ViolentCrimesPerPop <- crime.pos$ViolentCrimesPerPop + 1
+
+mod.aic.pos <- lm(formula = ViolentCrimesPerPop ~ state + fold + racepctblack + 
+    racePctHisp + agePct12t29 + pctUrban + medIncome + pctWWage + 
+    pctWFarmSelf + pctWInvInc + pctWRetire + medFamInc + whitePerCap + 
+    indianPerCap + OtherPerCap + PctPopUnderPov + PctLess9thGrade + 
+    PctEmploy + PctEmplManu + PctOccupManu + PctOccupMgmtProf + 
+    MalePctDivorce + MalePctNevMarr + TotalPctDiv + PctKids2Par + 
+    PctWorkMom + NumIlleg + PctIlleg + NumImmig + PctNotSpeakEnglWell + 
+    PctLargHouseOccup + PersPerOccupHous + PersPerRentOccHous + 
+    PctPersOwnOccup + PctPersDenseHous + HousVacant + PctHousOccup + 
+    PctHousOwnOcc + PctVacantBoarded + PctVacMore6Mos + OwnOccLowQuart + 
+    OwnOccMedVal + RentLowQ + MedRent + MedOwnCostPctIncNoMtg + 
+    NumInShelters + NumStreet + PctForeignBorn + PctSameCity85 + 
+    PctUsePubTrans + LemasPctOfficDrugUn, data = crime.pos)
+
+print(paste("R-squared value before Box-Cox transformation:",
+            round(summary(mod.aic.pos)$r.squared,4)))
+
+bc <- boxcox(mod.aic.pos, plotit=T)
+lambda <- bc$x[which.max(bc$y)]
+print(paste("Box-Cox transformation Optimal Lambda Value:",lambda))
+
+# fit model with transformation
+
+mod.aic.pos.transform <- lm(formula = ViolentCrimesPerPop^lambda ~ state + fold + 
+    racepctblack + racePctHisp + agePct12t29 + pctUrban + medIncome + pctWWage + 
+    pctWFarmSelf + pctWInvInc + pctWRetire + medFamInc + whitePerCap + 
+    indianPerCap + OtherPerCap + PctPopUnderPov + PctLess9thGrade + 
+    PctEmploy + PctEmplManu + PctOccupManu + PctOccupMgmtProf + 
+    MalePctDivorce + MalePctNevMarr + TotalPctDiv + PctKids2Par + 
+    PctWorkMom + NumIlleg + PctIlleg + NumImmig + PctNotSpeakEnglWell + 
+    PctLargHouseOccup + PersPerOccupHous + PersPerRentOccHous + 
+    PctPersOwnOccup + PctPersDenseHous + HousVacant + PctHousOccup + 
+    PctHousOwnOcc + PctVacantBoarded + PctVacMore6Mos + OwnOccLowQuart + 
+    OwnOccMedVal + RentLowQ + MedRent + MedOwnCostPctIncNoMtg + 
+    NumInShelters + NumStreet + PctForeignBorn + PctSameCity85 + 
+    PctUsePubTrans + LemasPctOfficDrugUn, data = crime.pos)
+
+print(paste("R-squared value after Box-Cox transformation:",
+            round(summary(mod.aic.pos.transform)$r.squared,4)))
+```
+
+Since the R squared value is improved materially the box cox transformation makes a positive impact on the model's ability to predict and should be used. 
+
+# Step 7: Report inferences and make predictions using your final model
+
+Print out Parameter Estimates and P-values for each Predictor Variable
+
+```{r echo=FALSE}
+mod.coef <- data.frame(coef(summary(mod.aic.pos.transform)))
+
+mod.coef$Predictor <- rownames(mod.coef)
+rownames(mod.coef)<- NULL
+mod.coef <- mod.coef[,c(5,1,4)] 
+colnames (mod.coef) <- c("Predictor", "Parameter Estimate", "p-Value")
+
+output <- mod.coef
+output$`p-Value` <- format(output$`p-Value`, digits = 3)
+output%>% data.frame()
+```
+
+R-squared for model
+
+```{r echo=FALSE}
+print(paste("The R-squared value for this model is:",
+            round(summary(mod.aic.pos.transform)$r.squared,4)))
+```
+
+95% CI of slope for most important predictor
+
+```{r echo=FALSE}
+confint(mod.aic.pos.transform, 'racepctblack', level=0.95)
+```
+
+
+95% CI of predictions at median values for each column 
+
+```{r echo=FALSE}
+mod.data <- crime.pos %>% dplyr::select(ViolentCrimesPerPop, state , fold , 
+    racepctblack , racePctHisp , agePct12t29 , pctUrban , medIncome , pctWWage , 
+    pctWFarmSelf , pctWInvInc , pctWRetire , medFamInc , whitePerCap , 
+    indianPerCap , OtherPerCap , PctPopUnderPov , PctLess9thGrade , 
+    PctEmploy , PctEmplManu , PctOccupManu , PctOccupMgmtProf , 
+    MalePctDivorce , MalePctNevMarr , TotalPctDiv , PctKids2Par , 
+    PctWorkMom , NumIlleg , PctIlleg , NumImmig , PctNotSpeakEnglWell , 
+    PctLargHouseOccup , PersPerOccupHous , PersPerRentOccHous , 
+    PctPersOwnOccup , PctPersDenseHous , HousVacant , PctHousOccup , 
+    PctHousOwnOcc , PctVacantBoarded , PctVacMore6Mos , OwnOccLowQuart , 
+    OwnOccMedVal , RentLowQ , MedRent , MedOwnCostPctIncNoMtg , 
+    NumInShelters , NumStreet , PctForeignBorn , PctSameCity85 , 
+    PctUsePubTrans , LemasPctOfficDrugUn)
+newdata <-  data.frame(rbind(apply(mod.data, 2, median)))
+
+predict(mod.aic.pos.transform, newdata, interval="confidence") 
+```
+
+95% PI of predictions at median values for each column 
+
+```{r echo=FALSE}
+predict(mod.aic.pos.transform, newdata, interval = "predict") 
+```
+
+The prediction and confidence intervals predict the same fit but the prediction interval is much wider to account for potential variation that any one sample might have. 
+
+# Conclusion
+
+In conclusion the most useful variables in an automated model selection are not that different from the variables chosen by EDA. These automated selection methods are able to chose variables much faster and with end results that are pretty good! This also showed the power of transformations such as the Box-Cox method which gave 3% improvement in R^2^ for a linear model fit on the same variables. Finally we predicted the violent crimes per 100k for the median of each variable in our dataset and gave both a confidence and prediction interval that we would expect real world values to fit into. The major things left out of this report deal with testing models on data that they werent trained with. This analysis doesnt run a true test of accuracy and only gives R^2^ and adjusted R^2^ values which do not tell anything about overfitting that may be occuring since training and analysis are done on the same dataset. 
+
+# Appendix
+
+In the zip file is a .R file with all this code nicely formated for execution as well as the crime data file and column names csv file
+
+## R code block 
+
+```{r eval=FALSE}
+############### prework ####################
+# read in libraries 
+library(tidyverse) # general dataframe manipulation
+library(MASS) # statistical package
+library(rms) # regression modeling package
+
+# read in data file and column names file 
+crime<- read_csv("crime.txt",col_names=F)
+colsnames <- read_csv("colnames.csv")
+colnames(crime)<-colnames(colsnames)
+
+############### Step 1: Exploratory Data Analysis ####################
+# get basic view of raw dataset
+glimpse(crime)
+
+# function to clean up columns that had ? in them 
+convert_types <- function(x) {
+    stopifnot(is.list(x))
+    x[] <- rapply(x, utils::type.convert, classes = "character",
+                  how = "replace", as.is = TRUE)
+    return(x)
+}
+
+# replace question marks with NAs and convert all columns back to what they should be
+crime[crime=="?"] <- NA
+crime <- convert_types(crime)
+
+# analyze the removed columns 
+crime.removed <- crime %>% dplyr::select(county,community,communityname,
+                              c(LemasSwornFT:PolicAveOTWorked),
+                              c(PolicCars:LemasGangUnitDeploy),PolicBudgPerPop) 
+
+# make table describing the columns removed from analysis
+colSums(is.na(crime.removed))%>% data.frame()%>% rename("Count of NAs" = ".") %>%
+  rownames_to_column("Removed Variables")%>% 
+  mutate(`Percent NAs` = `Count of NAs`/dim(crime.removed)[1],
+         `Column Type` = sapply(crime.removed,class))
+
+# remove columns with too many NA values
+crime <- crime %>% dplyr::select(-county,-community,-communityname,
+                         -c(LemasSwornFT:PolicAveOTWorked),
+                         -c(PolicCars:LemasGangUnitDeploy),-PolicBudgPerPop)
+# remove rows with NA values
+crime <- crime %>% na.omit()
+
+## In Depth Single Variable Exploration
+
+ggplot(
+  data = crime,
+  aes(y = PctEmploy,x = ViolentCrimesPerPop)
+) + geom_point() + 
+  ggtitle(paste("The percentage of people employed vs crimes shows lower",
+                " employment trends with more crimes"))
+
+ggplot(
+  data = crime,
+  aes(y = perCapInc,x = ViolentCrimesPerPop)
+) + geom_point() + 
+  ggtitle(paste("Per capita income vs crimes shows lower income",
+                           " trends with more crimes"))
+
+ggplot(
+  data = crime,
+  aes(y = RentMedian,x = ViolentCrimesPerPop)
+) + geom_point() + 
+  ggtitle(paste("Lower Median Rent vs crime shows lower rent",
+                           "trends with more crimes"))
+
+ggplot(
+  data = crime,
+  aes(y = PctHousOwnOcc,x = ViolentCrimesPerPop)
+) + geom_point() + 
+  ggtitle(paste("Percentage of houses owned by the occupants shows",
+                " lower homeownership trends with more crime"))
+
+
+###### Step 2: Fit a linear Model ####################
+
+# make lm with 4 predictors chosen in EDA
+simple_4var_lm <- lm(ViolentCrimesPerPop ~ PctEmploy + perCapInc + 
+                       RentMedian + PctHousOwnOcc,data = crime)
+summary(simple_4var_lm)
+
+####### Step 3: Perform model selection ####################
+
+### fastbw 
+# fit ols model with every variable
+mod.ols <- ols( ViolentCrimesPerPop ~ ., data=crime)
+# run fastbw variable selection
+fastbw.parameters <- fastbw(mod.ols, rule="p", sls=0.05)
+# print out variables saved
+fastbw.parameters$coefficients
+
+### stepAIC 
+mod <- lm(ViolentCrimesPerPop ~ ., data=crime)
+summary(mod)
+mod.aic <- stepAIC(mod)
+
+# Final stepAIC model
+summary(mod.aic)
+
+# Final fastbw model
+mod.fastbw <- lm(ViolentCrimesPerPop ~ state+racepctblack+agePct12t29+pctUrban +            
+pctWWage+pctWFarmSelf+pctWInvInc+OtherPerCap +          
+PctEmploy+MalePctDivorce+MalePctNevMarr+TotalPctDiv+
+PctKids2Par+PctWorkMom+PctIlleg+NumImmig+       
+PctNotSpeakEnglWell+PersPerOccupHous+PersPerRentOccHous+PctPersOwnOccup+    
+PctPersDenseHous+HousVacant+PctHousOccup+PctHousOwnOcc+       
+OwnOccLowQuart+RentLowQ+MedRent+MedOwnCostPctIncNoMtg+
+NumStreet+PctForeignBorn , data=crime)
+summary(mod.fastbw)
+
+
+
+### Step 4: Apply diagnostics to the model ####################
+
+## Fitted values vs residuals plot
+plot(mod.aic$fitted.values, mod.aic$residuals)
+
+## Q-Q plot
+qqnorm(mod.aic$residuals)
+
+## Lagged residual plot
+n <- length(residuals(mod.aic))
+plot(tail(residuals(mod.aic),n-1)~head(residuals(mod.aic),n-1),
+     xlab = expression(hat(epsilon)), ylab=expression(hat(epsilon)[i+1]))
+abline(h=0,v=0,col=grey(.75))
+
+### Step 5: Investigate fit for individual observations ####################
+
+X <- model.matrix(mod.aic)
+n <- dim(X)[1]
+p <- dim(X)[2]
+
+hatv <- hatvalues(mod.aic)
+
+# Leverage investigation
+
+high.leverage <- hatv[hatv>2*p/n]
+print(paste("Number of high leverage points:",length(high.leverage)))
+
+# Outlier investigation
+
+rstd <- rstandard(mod.aic)
+outlier <- rstd[abs(rstd)>3]
+
+print(paste("Number of outlier points:",length(outlier)))
+
+
+rstd.hand <- mod.aic$residuals/(sqrt(1- hatv)*
+                sqrt(sum(mod.aic$residuals^2)/mod.aic$df.residual))
+
+# Problematic investigation
+
+problematic <- which(hatv>2*p/n&abs(rstd)>3)
+print(paste("Number of problematic points:",length(problematic)))
+
+# Cooks distance influence investigation
+
+cook <- cooks.distance(mod.aic)
+
+print(paste("Largest cook's distance:",max(cook)))
+
+
+num.df <- p
+den.df <- n-p
+F.thresh <- qf(0.5,num.df,den.df)
+
+print(paste("F statistic threshold:",F.thresh))
+
+influential <- which(hatv>2*p/n&abs(rstd)>3&cook>F.thresh)
+print(paste("Number of influential points:",length(influential)))
+
+############### Step 6: Apply transformations to model as needed ####################
+
+# make Violent Crimes Per Pop always positive for boxcox
+crime.pos <- crime
+crime.pos$ViolentCrimesPerPop <- crime.pos$ViolentCrimesPerPop + 1
+
+mod.aic.pos <- lm(formula = ViolentCrimesPerPop ~ state + fold + racepctblack + 
+    racePctHisp + agePct12t29 + pctUrban + medIncome + pctWWage + 
+    pctWFarmSelf + pctWInvInc + pctWRetire + medFamInc + whitePerCap + 
+    indianPerCap + OtherPerCap + PctPopUnderPov + PctLess9thGrade + 
+    PctEmploy + PctEmplManu + PctOccupManu + PctOccupMgmtProf + 
+    MalePctDivorce + MalePctNevMarr + TotalPctDiv + PctKids2Par + 
+    PctWorkMom + NumIlleg + PctIlleg + NumImmig + PctNotSpeakEnglWell + 
+    PctLargHouseOccup + PersPerOccupHous + PersPerRentOccHous + 
+    PctPersOwnOccup + PctPersDenseHous + HousVacant + PctHousOccup + 
+    PctHousOwnOcc + PctVacantBoarded + PctVacMore6Mos + OwnOccLowQuart + 
+    OwnOccMedVal + RentLowQ + MedRent + MedOwnCostPctIncNoMtg + 
+    NumInShelters + NumStreet + PctForeignBorn + PctSameCity85 + 
+    PctUsePubTrans + LemasPctOfficDrugUn, data = crime.pos)
+
+print(paste("R-squared value before Box-Cox transformation:",
+            round(summary(mod.aic.pos)$r.squared,4)))
+
+bc <- boxcox(mod.aic.pos, plotit=T)
+lambda <- bc$x[which.max(bc$y)]
+print(paste("Box-Cox transformation Optimal Lambda Value:",lambda))
+
+# fit model with transformation
+
+mod.aic.pos.transform <- lm(formula = ViolentCrimesPerPop^lambda ~ state + fold + 
+    racepctblack + racePctHisp + agePct12t29 + pctUrban + medIncome + pctWWage + 
+    pctWFarmSelf + pctWInvInc + pctWRetire + medFamInc + whitePerCap + 
+    indianPerCap + OtherPerCap + PctPopUnderPov + PctLess9thGrade + 
+    PctEmploy + PctEmplManu + PctOccupManu + PctOccupMgmtProf + 
+    MalePctDivorce + MalePctNevMarr + TotalPctDiv + PctKids2Par + 
+    PctWorkMom + NumIlleg + PctIlleg + NumImmig + PctNotSpeakEnglWell + 
+    PctLargHouseOccup + PersPerOccupHous + PersPerRentOccHous + 
+    PctPersOwnOccup + PctPersDenseHous + HousVacant + PctHousOccup + 
+    PctHousOwnOcc + PctVacantBoarded + PctVacMore6Mos + OwnOccLowQuart + 
+    OwnOccMedVal + RentLowQ + MedRent + MedOwnCostPctIncNoMtg + 
+    NumInShelters + NumStreet + PctForeignBorn + PctSameCity85 + 
+    PctUsePubTrans + LemasPctOfficDrugUn, data = crime.pos)
+
+print(paste("R-squared value after Box-Cox transformation:",
+            round(summary(mod.aic.pos.transform)$r.squared,4)))
+
+#### Step 7: Report inferences and make predictions using your final model #############
+
+mod.coef <- data.frame(coef(summary(mod.aic.pos.transform)))
+
+mod.coef$Predictor <- rownames(mod.coef)
+rownames(mod.coef)<- NULL
+mod.coef <- mod.coef[,c(5,1,4)] 
+colnames (mod.coef) <- c("Predictor", "Parameter Estimate", "p-Value")
+
+output <- mod.coef
+output$`p-Value` <- format(output$`p-Value`, digits = 3)
+output%>% data.frame()
+
+print(paste("The R-squared value for this model is:",
+            round(summary(mod.aic.pos.transform)$r.squared,4)))
+
+confint(mod.aic.pos.transform, 'racepctblack', level=0.95)
+
+# create new data out of median of all columns used in model
+mod.data <- crime.pos %>% dplyr::select(ViolentCrimesPerPop, state , fold , 
+    racepctblack , racePctHisp , agePct12t29 , pctUrban , medIncome , pctWWage , 
+    pctWFarmSelf , pctWInvInc , pctWRetire , medFamInc , whitePerCap , 
+    indianPerCap , OtherPerCap , PctPopUnderPov , PctLess9thGrade , 
+    PctEmploy , PctEmplManu , PctOccupManu , PctOccupMgmtProf , 
+    MalePctDivorce , MalePctNevMarr , TotalPctDiv , PctKids2Par , 
+    PctWorkMom , NumIlleg , PctIlleg , NumImmig , PctNotSpeakEnglWell , 
+    PctLargHouseOccup , PersPerOccupHous , PersPerRentOccHous , 
+    PctPersOwnOccup , PctPersDenseHous , HousVacant , PctHousOccup , 
+    PctHousOwnOcc , PctVacantBoarded , PctVacMore6Mos , OwnOccLowQuart , 
+    OwnOccMedVal , RentLowQ , MedRent , MedOwnCostPctIncNoMtg , 
+    NumInShelters , NumStreet , PctForeignBorn , PctSameCity85 , 
+    PctUsePubTrans , LemasPctOfficDrugUn)
+newdata <-  data.frame(rbind(apply(mod.data, 2, median)))
+
+# confidence interval of ViolentCrimesPerPop for new data
+predict(mod.aic.pos.transform, newdata, interval="confidence") 
+
+# prediction interval of ViolentCrimesPerPop for new data
+predict(mod.aic.pos.transform, newdata, interval = "predict") 
+```
+
