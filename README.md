@@ -5,4 +5,4 @@ Dataset location: https://archive.ics.uci.edu/ml/datasets/Communities+and+Crime
 
 Project Requirements: https://rise.articulate.com/share/3gQtfu2_svd3wgxfR8dufv1bmZ5c6lGD#/
 
-Final Project for Notre Dame [DS64510] Linear Models class Spring-2019
+Final Project for Notre Dame Linear Models class Spring-2019
